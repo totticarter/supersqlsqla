@@ -107,7 +107,10 @@ class DBAPICursor(with_metaclass(abc.ABCMeta, object)):
             return None
         else:
             self._rownumber += 1
-            return self._data.popleft()
+            result = collections.deque()
+            result.append(map(tuple, self._data))
+            one_data = result.popleft()
+            return one_data
 
     def fetchmany(self, size=None):
         """Fetch the next set of rows of a query result, returning a sequence of sequences (e.g. a
@@ -139,13 +142,21 @@ class DBAPICursor(with_metaclass(abc.ABCMeta, object)):
         An :py:class:`~pyhive.exc.Error` (or subclass) exception is raised if the previous call to
         :py:meth:`execute` did not produce any result set or no call was issued yet.
         """
+        #original impl
+        # result = []
+        # while True:
+        #     one = self.fetchone()
+        #     if one is None:
+        #         break
+        #     else:
+        #         result.append(one)
+        # return result
+
+        #my impl
         result = []
-        while True:
-            one = self.fetchone()
-            if one is None:
-                break
-            else:
-                result.append(one)
+        # for row in self._data:
+        #     result.append(row)
+        result = map(tuple, self._data)
         return result
 
     @property
@@ -252,3 +263,28 @@ class UniversalSet(object):
     """set containing everything"""
     def __contains__(self, item):
         return True
+
+_VALUES_TO_NAMES = {
+    0: "BOOLEAN_TYPE",
+    1: "TINYINT_TYPE",
+    2: "SMALLINT_TYPE",
+    -5: "INT_TYPE",
+    4: "INTEGER",
+    5: "FLOAT_TYPE",
+    6: "DOUBLE_TYPE",
+    12: "STRING_TYPE",
+    8: "TIMESTAMP_TYPE",
+    9: "BINARY_TYPE",
+    10: "ARRAY_TYPE",
+    11: "MAP_TYPE",
+    # 12: "STRUCT_TYPE",
+    13: "UNION_TYPE",
+    14: "USER_DEFINED_TYPE",
+    15: "DECIMAL_TYPE",
+    16: "NULL_TYPE",
+    17: "DATE_TYPE",
+    18: "VARCHAR_TYPE",
+    19: "CHAR_TYPE",
+    20: "INTERVAL_YEAR_MONTH_TYPE",
+    21: "INTERVAL_DAY_TIME_TYPE",
+  }

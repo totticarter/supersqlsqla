@@ -7,6 +7,8 @@ Many docstrings in this file are based on the PEP, which is in the public domain
 
 from __future__ import absolute_import
 from __future__ import unicode_literals
+
+from TCLIService import ttypes
 from builtins import object
 from PySupersql import common
 from PySupersql.common import DBAPITypeObject
@@ -52,13 +54,19 @@ class Connection(object):
         self._args = args
         self._kwargs = kwargs
 
+        import logging, os
+        logging.basicConfig(filename=os.path.join('/Users/waixingren/PycharmProjects/sql', 'log.txt'), level=logging.DEBUG)
+        #/Users/waixingren/PycharmProjects/sql
+        logging.debug('begin to load class')
+
         supersqljdbcJars = ["/Users/waixingren/software/tencent/uaejdbc/supersql-jdbc/target/uaejdbc-1.0-SNAPSHOT-jar-with-dependencies.jar"]
         jvm_path = jpype.getDefaultJVMPath()
         jvm_cp = "-Djava.class.path={}".format(":".join(supersqljdbcJars))
         jpype.startJVM(jvm_path, jvm_cp)
+        logging.debug('jar loaed and jvm started, begin to load class')
 
         javaClass = jpype.JClass('com.tencent.supersql.jdbc.SSqlDriver')
-        # str = "supersql://localhost:7911"
+        logging.debug('ssqldriver loaded')
         str1 = 'supersql://' + self._kwargs.get('host') + ':' + str(self._kwargs.get('port'))
         hostport = str1[str1.index(':'): str1.__len__()]
         ssqljdbcurl = "jdbc:ssql" + hostport + "/default"
@@ -133,50 +141,47 @@ class Cursor(common.DBAPICursor):
             lambda: self._columns is None and
             self._state not in (self._STATE_NONE, self._STATE_FINISHED)
         )
-        if self._columns is None:
-            return None
-        return [
-            # name, type_code, display_size, internal_size, precision, scale, null_ok
-            (col['name'], col['type'], None, None, None, None, True)
-            for col in self._columns
-        ]
+        # if self._columns is None:
+        #     return None
+        # return [
+        #     # name, type_code, display_size, internal_size, precision, scale, null_ok
+        #     (col['name'], col['type'], None, None, None, None, True)
+        #     for col in self._columns
+        # ]
+
+        self._description = []
+        resultSetMetaData = self._columns.getMetaData()
+        columnCount = resultSetMetaData.getColumnCount()
+        from PySupersql.common import _VALUES_TO_NAMES
+        for i in range(1,columnCount+1):
+            _type = resultSetMetaData.getColumnType(i)
+            type_code = _VALUES_TO_NAMES[_type]
+            self._description.append((
+                resultSetMetaData.getColumnName(i).decode('utf-8'), type_code.decode('utf-8'),None, None, None, None, True
+            ))
+        return self._description
 
     def execute(self, operation, parameters=None):
 
+
+        # Prepare statement
+        if parameters is None:
+            sql = operation
+        else:
+            sql = operation % _escaper.escape_args(parameters)
+
+        self._reset_state()
+        self._state = self._STATE_RUNNING
+
         self._connection.setSchema('default')
         statement=self._connection.createStatement()
-        resultset = statement.executeQuery("show columns from nationhive");
-        resultset.next()
-        print resultset.getString(1)
-
-        # headers = {
-        #     'X-Presto-Catalog': self._catalog,
-        #     'X-Presto-Schema': self._schema,
-        #     'X-Presto-Source': self._source,
-        #     'X-Presto-User': self._username,
-        # }
-        #
-        # if self._session_props:
-        #     headers['X-Presto-Session'] = ','.join(
-        #         '{}={}'.format(propname, propval)
-        #         for propname, propval in self._session_props.items()
-        #     )
-        #
-        # # Prepare statement
-        # if parameters is None:
-        #     sql = operation
-        # else:
-        #     sql = operation % _escaper.escape_args(parameters)
-        #
-        # self._reset_state()
-        #
-        # self._state = self._STATE_RUNNING
-        # url = urlparse.urlunparse((
-        #     'http', '{}:{}'.format(self._host, self._port), '/v1/statement', None, None, None))
-        # _logger.info('%s', sql)
-        # _logger.debug("Headers: %s", headers)
-        # response = requests.post(url, data=sql.encode('utf-8'), headers=headers)
-        # self._process_response(response)
+        if sql.startswith('SELECT'):
+            sql = 'select count(*) as count_1 from kylin_sales'
+        else:
+            sql = 'desc nationhive'
+        resultset = statement.executeQuery(sql)
+        self._columns = resultset
+        self._process_response()
 
     def poll(self):
         """Poll for and return the raw status data provided by the Presto REST API.
@@ -198,7 +203,14 @@ class Cursor(common.DBAPICursor):
 
     def _fetch_more(self):
         """Fetch the next URI and update state"""
-        self._process_response(requests.get(self._nextUri))
+        # self._process_response(requests.get(self._nextUri))
+
+        resultSet = self._columns
+        # self._decode_binary(new_data)
+        while resultSet.next():
+            columnName = resultSet.getColumn
+        oneRow = []
+        oneRow.append()
 
     def _decode_binary(self, rows):
         # As of Presto 0.69, binary data is returned as the varbinary type in base64 format
@@ -208,37 +220,57 @@ class Cursor(common.DBAPICursor):
                 for row in rows:
                     row[i] = base64.b64decode(row[i])
 
-    def _process_response(self, response):
+    def _process_response(self):
         """Given the JSON response from Presto's REST API, update the internal state with the next
         URI and any data from the response
         """
         # TODO handle HTTP 503
-        if response.status_code != requests.codes.ok:
-            fmt = "Unexpected status code {}\n{}"
-            raise OperationalError(fmt.format(response.status_code, response.content))
-        response_json = response.json()
-        _logger.debug("Got response %s", response_json)
-        assert self._state == self._STATE_RUNNING, "Should be running if processing response"
-        self._nextUri = response_json.get('nextUri')
-        self._columns = response_json.get('columns')
-        if 'X-Presto-Clear-Session' in response.headers:
-            propname = response.headers['X-Presto-Clear-Session']
-            self._session_props.pop(propname, None)
-        if 'X-Presto-Set-Session' in response.headers:
-            propname, propval = response.headers['X-Presto-Set-Session'].split('=', 1)
-            self._session_props[propname] = propval
-        if 'data' in response_json:
-            assert self._columns
-            new_data = response_json['data']
-            self._decode_binary(new_data)
-            self._data += map(tuple, new_data)
-        if 'nextUri' not in response_json:
-            self._state = self._STATE_FINISHED
-        if 'error' in response_json:
-            assert not self._nextUri, "Should not have nextUri if failed"
-            raise DatabaseError(response_json['error'])
+        # if response.status_code != requests.codes.ok:
+        #     fmt = "Unexpected status code {}\n{}"
+        #     raise OperationalError(fmt.format(response.status_code, response.content))
+        # response_json = response.json()
+        # _logger.debug("Got response %s", response_json)
+        # assert self._state == self._STATE_RUNNING, "Should be running if processing response"
+        # self._nextUri = response_json.get('nextUri')
+        # self._columns = response_json.get('columns')
+        # if 'X-Presto-Clear-Session' in response.headers:
+        #     propname = response.headers['X-Presto-Clear-Session']
+        #     self._session_props.pop(propname, None)
+        # if 'X-Presto-Set-Session' in response.headers:
+        #     propname, propval = response.headers['X-Presto-Set-Session'].split('=', 1)
+        #     self._session_props[propname] = propval
+        # if 'data' in response_json:
+        #     assert self._columns
+        #     new_data = response_json['data']
+        #     self._decode_binary(new_data)
+        #     self._data += map(tuple, new_data)
+        # if 'nextUri' not in response_json:
+        #     self._state = self._STATE_FINISHED
+        # if 'error' in response_json:
+        #     assert not self._nextUri, "Should not have nextUri if failed"
+        #     raise DatabaseError(response_json['error'])
 
+        #process response for supersql
+        resultSet = self._columns
+        resultSetMetaData = resultSet.getMetaData()
+        column_count = resultSetMetaData.getColumnCount()
+        # self._data = []
+        while resultSet.next():
+            one_row = []
+            for i in range(1, column_count+1):
+                column_type = resultSetMetaData.getColumnType(i)
+                if column_type == 4:
+                    column_value = resultSet.getInt(i)
+                    one_row.append(column_value)
+                elif column_type == 12:
+                    column_value = resultSet.getString(i)
+                    one_row.append(column_value)
+                elif column_type == -5:
+                    column_value = resultSet.getLong(i)
+                    one_row.append(column_value)
+            self._data.append(one_row)
 
+        self._state = self._STATE_FINISHED
 #
 # Type Objects and Constructors
 #

@@ -93,7 +93,8 @@ class SupersqlDialect(default.DefaultDialect):
         if schema:
             full_table = self.identifier_preparer.quote_identifier(schema) + '.' + full_table
         try:
-            return connection.execute('SHOW COLUMNS FROM {}'.format(full_table))
+            # rows = connection.execute('DESCRIBE {}'.format(full_table)).fetchall()
+            return connection.execute('DESCRIBE {}'.format(full_table)).fetchall()
         except (supersql.DatabaseError, exc.DatabaseError) as e:
             # Normally SQLAlchemy should wrap this exception in sqlalchemy.exc.DatabaseError, which
             # it successfully does in the Hive version. The difference with Presto is that this
@@ -121,18 +122,49 @@ class SupersqlDialect(default.DefaultDialect):
 
     def get_columns(self, connection, table_name, schema=None, **kw):
         rows = self._get_table_columns(connection, table_name, schema)
+
+        # presto impl
+        # result = []
+        # for row in rows:
+        #     try:
+        #         coltype = _type_map[row.Type]
+        #     except KeyError:
+        #         util.warn("Did not recognize type '%s' of column '%s'" % (row.Type, row.Column))
+        #         coltype = types.NullType
+        #     result.append({
+        #         'name': row.Column,
+        #         'type': coltype,
+        #         # newer Presto no longer includes this column
+        #         'nullable': getattr(row, 'Null', True),
+        #         'default': None,
+        #     })
+        # return result
+
+        # hive impl
+        rows = [[col.strip() if col else None for col in row] for row in rows]
+        rows = [row for row in rows if row[0] and row[0] != '# col_name']
         result = []
-        for row in rows:
+        for (col_name, col_type, _comment) in rows:
+            if col_name == '# Partition Information':
+                break
+            # Take out the more detailed type information
+            # e.g. 'map<int,int>' -> 'map'
+            #      'decimal(10,1)' -> decimal
+            col_type = re.search(r'^\w+', col_type).group(0)
+            if col_type.__eq__('int'):
+                col_type = 'integer'
+            elif col_type.__eq__('string'):
+                col_type = 'varchar'
             try:
-                coltype = _type_map[row.Type]
+                coltype = _type_map[col_type]
             except KeyError:
-                util.warn("Did not recognize type '%s' of column '%s'" % (row.Type, row.Column))
+                util.warn("Did not recognize type '%s' of column '%s'" % (
+                    col_type, col_name))
                 coltype = types.NullType
             result.append({
-                'name': row.Column,
+                'name': col_name,
                 'type': coltype,
-                # newer Presto no longer includes this column
-                'nullable': getattr(row, 'Null', True),
+                'nullable': True,
                 'default': None,
             })
         return result
@@ -146,17 +178,18 @@ class SupersqlDialect(default.DefaultDialect):
         return []
 
     def get_indexes(self, connection, table_name, schema=None, **kw):
-        rows = self._get_table_columns(connection, table_name, schema)
-        col_names = []
-        for row in rows:
-            part_key = 'Partition Key'
-            # Newer Presto moved this information from a column to the comment
-            if (part_key in row and row[part_key]) or row['Comment'].startswith(part_key):
-                col_names.append(row['Column'])
-        if col_names:
-            return [{'name': 'partition', 'column_names': col_names, 'unique': False}]
-        else:
-            return []
+        return []
+        # rows = self._get_table_columns(connection, table_name, schema)
+        # col_names = []
+        # for row in rows:
+        #     part_key = 'Partition Key'
+        #     # Newer Presto moved this information from a column to the comment
+        #     if (part_key in row and row[part_key]) or row['Comment'].startswith(part_key):
+        #         col_names.append(row['Column'])
+        # if col_names:
+        #     return [{'name': 'partition', 'column_names': col_names, 'unique': False}]
+        # else:
+        #     return []
 
     def get_table_names(self, connection, schema=None, **kw):
         query = 'SHOW TABLES'
